@@ -5,6 +5,11 @@
 // (exit 2) or allows (exit 0) the call. No daemon, no LLM, no network -
 // just regex, sub-millisecond per evaluation.
 //
+// The one opt-in exception is the classifier block in rules.yaml: in
+// shadow mode it asks a System One endpoint you configure about calls
+// the rules allowed, and logs what it would have decided. It never
+// changes a decision (shadow.go).
+//
 // Usage:
 //
 //	barmkin eval        Read JSON from stdin, evaluate, exit 0 (allow) or 2 (deny)
@@ -34,6 +39,7 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -119,6 +125,9 @@ func cmdEval(configPath string) {
 		}
 		return
 	}
+	if verbose && cfg.Classifier.err != nil {
+		fmt.Fprintf(os.Stderr, "[barmkin] classifier config error: %v (classifier disabled)\n", cfg.Classifier.err)
+	}
 
 	engine := newEngine(cfg)
 	defer engine.close()
@@ -181,6 +190,22 @@ func cmdValidate(configPath string) {
 	fmt.Printf("\notel: %s\n", otelStatus(cfg.OTel))
 	fmt.Printf("log:  %s\n", logStatus(cfg.Log))
 
+	// Silent unless the classifier is enabled or broken, so a config
+	// without one validates exactly as before.
+	if c := cfg.Classifier; c.Enabled || c.forcedOff || c.err != nil {
+		fmt.Printf("classifier: %s\n", classifierStatus(c))
+		if c.err != nil {
+			for _, line := range strings.Split(c.err.Error(), "\n") {
+				fmt.Printf("  ✗ %s\n", line)
+				errs++
+			}
+		}
+		for _, w := range c.warnings() {
+			fmt.Printf("  ⚠ %s\n", w)
+			warns++
+		}
+	}
+
 	if warns > 0 {
 		fmt.Printf("\n%d warning(s)\n", warns)
 	}
@@ -203,7 +228,8 @@ func cmdTest(configPath string) {
 	if err != nil {
 		fatalf("config: %v", err)
 	}
-	cfg.Log.Path = "" // don't log test vectors
+	cfg.Log.Path = ""              // don't log test vectors
+	cfg.Classifier.Enabled = false // the vectors test the rules; shadow mode can't change them
 
 	vectors := []struct {
 		label   string
@@ -273,6 +299,8 @@ func cmdStats(configPath string) {
 
 	var events, allows, denies int
 	hits := map[string]int{}
+	var classified, unavailable int
+	would := map[string]int{}
 
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 65536), 65536)
@@ -290,6 +318,14 @@ func cmdStats(configPath string) {
 		} else {
 			allows++
 		}
+		if c := entry.Classifier; c != nil {
+			classified++
+			if c.Error != "" {
+				unavailable++
+			} else {
+				would[c.WouldDecision]++
+			}
+		}
 	}
 
 	fmt.Printf("events:  %d\n", events)
@@ -304,6 +340,14 @@ func cmdStats(configPath string) {
 		sort.Strings(rules)
 		for _, rule := range rules {
 			fmt.Printf("  %-24s %d\n", rule, hits[rule])
+		}
+	}
+	if classified > 0 {
+		fmt.Println("classifier (shadow, never acted on):")
+		fmt.Printf("  %-16s %d\n", "classified:", classified)
+		fmt.Printf("  %-16s %d\n", "unavailable:", unavailable)
+		for _, v := range []string{"allow", "escalate", "deny"} {
+			fmt.Printf("  %-16s %d\n", "would "+v+":", would[v])
 		}
 	}
 }

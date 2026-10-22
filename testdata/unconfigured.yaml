@@ -1,0 +1,20 @@
+# Fixture for TestGolden_UnconfiguredBinary (golden_test.go). The golden
+# transcript records barmkin's exact output for this file, so keep it
+# small and change it only together with testdata/unconfigured.golden.
+rules:
+  - name: "npm-publish"
+    pattern: 'npm\s+publish'
+    reason: "Publishing a package"
+    example: "npm publish"
+
+  - name: "allow-dry-run"
+    pattern: 'npm\s+publish\s+--dry-run'
+    action: "allow"
+    reason: "A dry run publishes nothing"
+    example: "npm publish --dry-run"
+
+  - name: "drop-prod"
+    pattern: 'dropdb\s+prod\b'
+
+log:
+  path: "{{LOG}}"

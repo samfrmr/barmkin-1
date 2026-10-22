@@ -1,0 +1,69 @@
+$ barmkin validate
+config: $DIR/rules.yaml
+rules:  3
+
+  ✓ npm-publish
+  ✓ allow-dry-run
+  ⚠ drop-prod: no reason
+  ✓ drop-prod
+
+otel: disabled
+log:  $DIR/barmkin.log
+
+1 warning(s)
+config valid
+exit 0
+
+$ barmkin test
+  ✗  deny   BARMKIN-TEST-DENY     allow - UNEXPECTED
+  ●  allow  BARMKIN-TEST-ALLOW    allow
+
+1/2 passed - barmkin may be misconfigured
+exit 1
+
+$ barmkin eval
+< {"trajectory_id":"s1","tool":"bash","action":"ShellCommand","args":{"command":"npm publish"}}
+! [barmkin] Publishing a package
+exit 2
+
+$ barmkin eval
+< {"trajectory_id":"s1","tool":"bash","action":"ShellCommand","args":{"command":"npm publish --dry-run"}}
+exit 0
+
+$ barmkin eval
+< {"trajectory_id":"s1","tool":"bash","action":"ShellCommand","args":{"command":"dropdb prod"}}
+! [barmkin] blocked by rule: drop-prod
+exit 2
+
+$ barmkin eval
+< {"tool_name":"Bash","tool_input":{"command":"make build"},"session_id":"s2","cwd":"/work","permission_mode":"auto"}
+exit 0
+
+$ barmkin eval
+< {"tool_name":"Bash","tool_input":{"command":"npm publish"},"session_id":"s2","permission_mode":"bypassPermissions"}
+! [barmkin] Publishing a package
+exit 2
+
+$ barmkin eval
+< not json
+exit 0
+
+$ barmkin eval
+exit 0
+
+$ barmkin stats
+events:  6
+allows:  3
+denies:  3
+hits:
+  drop-prod                1
+  npm-publish              2
+exit 0
+
+$ cat barmkin.log
+{"ts":"TS","trajectory_id":"s1","tool":"bash","action":"ShellCommand","decision":"deny","reason":"Publishing a package","duration_ms":0,"rule":"npm-publish","content":"npm publish","agent":"opencode"}
+{"ts":"TS","trajectory_id":"s1","tool":"bash","action":"ShellCommand","decision":"allow","duration_ms":0,"content":"npm publish --dry-run","agent":"opencode"}
+{"ts":"TS","trajectory_id":"s1","tool":"bash","action":"ShellCommand","decision":"deny","duration_ms":0,"rule":"drop-prod","content":"dropdb prod","agent":"opencode"}
+{"ts":"TS","trajectory_id":"s2","tool":"bash","action":"ShellCommand","decision":"allow","duration_ms":0,"content":"make build","agent":"claude-code"}
+{"ts":"TS","trajectory_id":"s2","tool":"bash","action":"ShellCommand","decision":"deny","reason":"Publishing a package","duration_ms":0,"rule":"npm-publish","content":"npm publish","agent":"claude-code"}
+{"ts":"TS","trajectory_id":"","tool":"","action":"","decision":"allow","reason":"invalid JSON (failing open)","duration_ms":0}

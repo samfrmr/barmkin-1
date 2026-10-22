@@ -9,6 +9,9 @@
 //	 "action":"ShellCommand","decision":"deny","reason":"Recursive force-delete",
 //	 "duration_ms":0.064,"rule":"rm-rf-force","content":"rm -rf /tmp",
 //	 "agent":"claude-code"}
+//
+// When the opt-in classifier runs (shadow.go), the line also carries a
+// "classifier" object with its would-be verdict.
 
 package main
 
@@ -40,6 +43,26 @@ type AuditEntry struct {
 	Rule    string `json:"rule,omitempty"`    // barmkin: matched rule name
 	Content string `json:"content,omitempty"` // barmkin: truncated command content
 	Agent   string `json:"agent,omitempty"`   // barmkin: agent identifier
+
+	// barmkin: present only when the opt-in classifier ran, so lines
+	// without it are unchanged
+	Classifier *ClassifierAudit `json:"classifier,omitempty"`
+}
+
+// ClassifierAudit is what the shadow classifier said about one call.
+// It never affects Decision: in shadow mode the outcome is the regex
+// layer's alone, so this block is calibration data.
+type ClassifierAudit struct {
+	Mode             string             `json:"mode"`                        // "shadow"
+	WouldDecision    string             `json:"would_decision,omitempty"`    // allow | escalate | deny; empty when there was no answer
+	DecidingQuestion string             `json:"deciding_question,omitempty"` // the question that produced would_decision
+	Probabilities    map[string]float64 `json:"probabilities,omitempty"`     // probability-of-yes per question
+	Thresholds       map[string]float64 `json:"thresholds,omitempty"`        // reject-at threshold per question
+	Error            string             `json:"error,omitempty"`             // no_credential | timeout | network | http_<code> | malformed_response | refused_send | breaker_open
+	Model            string             `json:"model,omitempty"`             // model the endpoint reported
+	RequestID        string             `json:"request_id,omitempty"`
+	LatencyMs        float64            `json:"latency_ms,omitempty"`
+	Breaker          string             `json:"breaker,omitempty"` // closed | open | half_open
 }
 
 // newDecisionLogger opens (or creates) the log file for appending.

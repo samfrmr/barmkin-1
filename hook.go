@@ -35,6 +35,9 @@ type Request struct {
 	ToolInput json.RawMessage `json:"tool_input"`
 	Command   string          `json:"command"`
 	SessionID string          `json:"session_id"`
+
+	// Claude Code permission mode (e.g. "auto"); only the classifier gate reads it
+	PermissionMode string `json:"permission_mode"`
 }
 
 // HookOutput is the evaluation result returned by the engine.

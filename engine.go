@@ -2,7 +2,8 @@
 //
 // Each `barmkin eval` call creates one Engine, evaluates one request,
 // records telemetry (log + OTel), and closes. There is no persistent
-// state between invocations - stats are derived from the log file.
+// state between invocations - stats are derived from the log file. The
+// one exception is the opt-in classifier's per-session breaker (shadow.go).
 
 package main
 
@@ -40,7 +41,7 @@ func (e *Engine) evaluate(input []byte) HookOutput {
 
 	var req Request
 	if err := json.Unmarshal(input, &req); err != nil {
-		e.record(Request{}, HookOutput{Decision: "allow", Reason: "invalid JSON (failing open)"}, "", start)
+		e.record(Request{}, HookOutput{Decision: "allow", Reason: "invalid JSON (failing open)"}, "", start, nil)
 		return HookOutput{Decision: "allow", Reason: "invalid JSON (failing open)"}
 	}
 
@@ -49,19 +50,26 @@ func (e *Engine) evaluate(input []byte) HookOutput {
 	matched := match(content, e.cfg.Rules)
 
 	var result HookOutput
+	var shadow *ClassifierAudit
 	if matched != nil {
 		result = HookOutput{Decision: "deny", Rule: matched.Name, Reason: matched.Reason}
 	} else {
 		result = HookOutput{Decision: "allow"}
+		// Only regex-allowed calls reach the classifier, and in shadow
+		// mode its verdict is recorded but never changes result.
+		if e.cfg.Classifier.gates(req, content, e.cfg.Rules) {
+			shadow = runShadow(&e.cfg.Classifier, req, content)
+		}
 	}
 
-	e.record(req, result, content, start)
+	e.record(req, result, content, start, shadow)
 	return result
 }
 
 // record writes the decision to the audit log and/or OTel exporter.
 // Called once per evaluation. Content is truncated for log readability.
-func (e *Engine) record(req Request, result HookOutput, content string, start time.Time) {
+// shadow is non-nil only when the classifier ran.
+func (e *Engine) record(req Request, result HookOutput, content string, start time.Time, shadow *ClassifierAudit) {
 	elapsed := time.Since(start)
 
 	entry := AuditEntry{
@@ -74,6 +82,7 @@ func (e *Engine) record(req Request, result HookOutput, content string, start ti
 		Rule:         result.Rule,
 		Content:      truncate(content, 80),
 		Agent:        req.AgentID,
+		Classifier:   shadow,
 	}
 
 	if e.otel != nil {
