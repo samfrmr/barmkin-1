@@ -195,12 +195,8 @@ func runShadow(c *Classifier, req Request, content string) *ClassifierAudit {
 }
 
 // classify builds the request state and asks the endpoint every
-// question in one call, sharing ctx's deadline with credential lookup.
+// question in one call.
 func classify(ctx context.Context, c *Classifier, req Request, content string) (*answer, error) {
-	client, err := newClassifierClient(ctx, c)
-	if err != nil {
-		return nil, err
-	}
 	command := truncate(content, 4000)
 	if c.Redact == nil || *c.Redact {
 		command = redact(command)
@@ -210,7 +206,7 @@ func classify(ctx context.Context, c *Classifier, req Request, content string) (
 	for _, q := range questions {
 		qs[q.ID] = wireQuestion{Type: "noul", Instructions: q.Instructions}
 	}
-	return client.ask(ctx, state, qs)
+	return newClassifierClient(c).ask(ctx, state, qs)
 }
 
 // thresholds merges the pinned reject-at thresholds with any config

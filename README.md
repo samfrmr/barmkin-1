@@ -120,7 +120,7 @@ otel:
 
 ## Shadow classifier (optional)
 
-Off by default. Add a `classifier` block to `rules.yaml` and every Bash command the rules allow is also sent to a System One endpoint you run or trust. The endpoint answers three fixed yes/no questions about it. Barmkin turns the answers into a would-be verdict (`allow`, `escalate` or `deny`) and logs it. It never acts on that verdict.
+Off by default. Add a `classifier` block to `rules.yaml` and every Bash command the rules allow is also sent to a System One endpoint you run, typically a localhost proxy in front of the model. The endpoint answers three fixed yes/no questions about it. Barmkin turns the answers into a would-be verdict (`allow`, `escalate` or `deny`) and logs it. It never acts on that verdict.
 
 > [!IMPORTANT]
 > Shadow mode is instrumentation, not protection. Whatever the classifier says, and whether or not it answers, the call goes ahead exactly as the regex rules decided. Use it to see what a classifier would have caught before you decide whether to trust one.
@@ -128,12 +128,13 @@ Off by default. Add a `classifier` block to `rules.yaml` and every Bash command 
 ```yaml
 classifier:
   enabled: true
-  base_url: "http://127.0.0.1:8080"      # your endpoint or local proxy, http(s) only
-  model: "your-model-id"                 # the response must report this model
-  credential:
-    file: "~/.barmkin/classifier.token"  # mode 0600; or env: VAR, or command: [argv]
-  skip_read_only: true                   # don't classify ls, cat, git status, ...
+  base_url: "http://127.0.0.1:8080"   # your own localhost proxy, http(s) only
+  model: "your-model-id"              # the response must report this model
+  skip_read_only: true                # don't classify ls, cat, git status, ...
 ```
+
+> [!NOTE]
+> Authentication is entirely the endpoint's business. Barmkin holds no credentials and sends no `Authorization` header. If the model needs an API key, a proxy on localhost adds it, so the key lives with the proxy and never in barmkin's config.
 
 Run `barmkin validate` after editing. An invalid block is reported and only turns the classifier off, never the rules. `BARMKIN_CLASSIFIER=off` turns it off without editing the config, and nothing in the environment can turn it on.
 
@@ -146,10 +147,9 @@ Each classified call adds a `classifier` object to its log line, and `barmkin st
 What to expect:
 
 - **Only regex-allowed calls are classified.** A rule deny is final and never reaches the classifier.
-- **It fails open.** A timeout, network or HTTP error, malformed response, unexpected model or missing credential is logged as `error` with no verdict. A deny verdict and a dead endpoint look the same to the agent: nothing happens.
+- **It fails open.** A timeout, network or HTTP error (including the endpoint refusing the request), malformed response or unexpected model is logged as `error` with no verdict. A deny verdict and a dead endpoint look the same to the agent: nothing happens.
 - **It adds latency.** Classification is synchronous, so each classified call can wait up to `timeout_ms` (default 1500). After a failure a per-session breaker skips the classifier for `cooldown_s`, so an outage costs one timeout rather than one per call.
-- **Only the command and cwd leave the machine**, with common secret patterns redacted and the command cut to 4000 characters. Never file contents or output. Anything still containing the credential or a private-key marker isn't sent at all.
-- **The agent can read the credential.** Barmkin runs as the agent's user, so the agent can read whatever barmkin can, and an `env:` credential is in its own environment. Use a scoped key, or a local proxy that holds the real one.
+- **Only the command and cwd leave the machine**, with common secret patterns redacted and the command cut to 4000 characters. Never file contents or output. A command still containing a private-key marker isn't sent at all.
 
 <details>
 <summary>All classifier settings</summary>
@@ -161,10 +161,7 @@ What to expect:
 | `base_url` | required | Requests go to `POST {base_url}/v1/systemone` |
 | `model` | required | Sent with every request. The response must report exactly this model |
 | `response_model` | | Regex the reported model must match instead, for gateways that report a longer name (e.g. `typesafe/jev-1.13-20260917` for `jev-1.13`) |
-| `timeout_ms` | `1500` | One deadline covering credential lookup and the request |
-| `credential.file` | | Token file, must be mode 0600 |
-| `credential.env` | | Environment variable holding the token |
-| `credential.command` | | argv whose trimmed stdout is the token, e.g. a secrets-manager CLI |
+| `timeout_ms` | `1500` | Deadline for the whole request |
 | `redact` | `true` | `false` sends the command unredacted |
 | `tools` | `[bash]` | Tools to classify |
 | `permission_modes` | all | Claude Code permission modes to classify, e.g. `[auto, bypassPermissions]`. Calls without one (opencode) always qualify |
@@ -174,7 +171,7 @@ What to expect:
 | `breaker.open_after_failures` | `1` | Consecutive failures before the breaker opens |
 | `breaker.cooldown_s` | `60` | Seconds before the next probe |
 
-Unknown keys and invalid values are errors. Set at most one `credential` source. With none, no `Authorization` header is sent.
+Unknown keys and invalid values are errors. There are no credential settings: authentication belongs to the endpoint.
 
 </details>
 
@@ -193,7 +190,7 @@ Any endpoint that speaks this format works. TypeSafe's Jev is one such model, an
 
 ```http
 POST {base_url}/v1/systemone
-Authorization: Bearer <token>
+Content-Type: application/json
 
 {"model":"your-model-id","state":{"command":"...","cwd":"..."},"questions":{"no_secret_egress":{"type":"noul","instructions":"..."},"no_outward_effect":{"type":"noul","instructions":"..."},"no_fetched_code_execution":{"type":"noul","instructions":"..."}}}
 ```

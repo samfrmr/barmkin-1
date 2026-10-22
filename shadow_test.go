@@ -478,7 +478,7 @@ func TestBreakerPath_SanitizesSessionID(t *testing.T) {
 	}
 }
 
-func TestRunShadow_TimeoutCoversCredentialAndRequest(t *testing.T) {
+func TestRunShadow_TimeoutBoundsTheCall(t *testing.T) {
 	release := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		<-release
@@ -487,8 +487,7 @@ func TestRunShadow_TimeoutCoversCredentialAndRequest(t *testing.T) {
 	defer close(release)
 
 	c := testClassifier(t, srv.URL)
-	c.TimeoutMs = 500
-	c.Credential = Credential{Command: []string{"sh", "-c", "sleep 0.3; printf zz-test-token-93f1"}}
+	c.TimeoutMs = 300
 	start := time.Now()
 	res := runShadow(c, Request{Tool: "bash", TrajectoryID: "sess-deadline"}, "make test")
 	if res.Error != "timeout" {
@@ -510,14 +509,13 @@ func TestValidate_ReportsClassifier(t *testing.T) {
 		}
 		return path
 	}
-	valid := write("valid.yaml", "classifier:\n  enabled: true\n  base_url: \"http://classifier.example\"\n  model: \"m-1\"\n  credential:\n    env: BARMKIN_TEST_UNSET_TOKEN\n")
+	valid := write("valid.yaml", "classifier:\n  enabled: true\n  base_url: \"http://classifier.example\"\n  model: \"m-1\"\n")
 	invalid := write("invalid.yaml", "classifier:\n  enabled: true\n  mode: enforce\n")
 
 	stdout, _, code := runBinary(t, dir, "", "-config", valid, "validate")
 	for _, want := range []string{
-		"classifier: shadow (http://classifier.example, model=m-1, timeout=1500ms, credential=env BARMKIN_TEST_UNSET_TOKEN, redact=true)",
+		"classifier: shadow (http://classifier.example, model=m-1, timeout=1500ms, redact=true)",
 		"⚠ base_url is plain http to a non-local host",
-		"⚠ credential: BARMKIN_TEST_UNSET_TOKEN is unset",
 		"config valid",
 	} {
 		if !strings.Contains(stdout, want) {

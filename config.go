@@ -65,12 +65,11 @@ type Classifier struct {
 	Enabled bool   `yaml:"enabled"` // master switch; absent block == false
 	Mode    string `yaml:"mode"`    // "shadow" (default, and the only supported mode)
 
-	BaseURL       string     `yaml:"base_url"`       // http(s) URL; requests go to POST {base_url}/v1/systemone
-	Model         string     `yaml:"model"`          // model id sent with every request
-	ResponseModel string     `yaml:"response_model"` // optional regex the response's model must match (default: exactly model)
-	TimeoutMs     int        `yaml:"timeout_ms"`     // one deadline for credential lookup plus the request (default 1500)
-	Credential    Credential `yaml:"credential"`     // bearer token source; empty == no Authorization header
-	Redact        *bool      `yaml:"redact"`         // mask secrets in the command before sending (default true)
+	BaseURL       string `yaml:"base_url"`       // http(s) URL; requests go to POST {base_url}/v1/systemone
+	Model         string `yaml:"model"`          // model id sent with every request
+	ResponseModel string `yaml:"response_model"` // optional regex the response's model must match (default: exactly model)
+	TimeoutMs     int    `yaml:"timeout_ms"`     // deadline for the whole request (default 1500)
+	Redact        *bool  `yaml:"redact"`         // mask secrets in the command before sending (default true)
 
 	Tools           []string `yaml:"tools"`            // normalized tool names to classify (default ["bash"])
 	PermissionModes []string `yaml:"permission_modes"` // Claude Code permission_mode values to classify (default: all)
@@ -83,13 +82,6 @@ type Classifier struct {
 	forcedOff     bool           // enabled in config, turned off by BARMKIN_CLASSIFIER=off
 	err           error          // decode or validation error; disables the classifier only
 	responseModel *regexp.Regexp // compiled ResponseModel
-}
-
-// Credential is where the bearer token comes from. Set at most one.
-type Credential struct {
-	File    string   `yaml:"file"`    // file holding the token; must be mode 0600
-	Env     string   `yaml:"env"`     // environment variable holding the token (also visible to the agent's own shell)
-	Command []string `yaml:"command"` // argv whose trimmed stdout is the token, e.g. a secrets-manager CLI
 }
 
 // Breaker is the per-session circuit breaker that stops paying the
@@ -181,7 +173,6 @@ func (c *Classifier) prepare() {
 	if c.Breaker.CooldownS == 0 {
 		c.Breaker.CooldownS = 60
 	}
-	c.Credential.File = expandPath(c.Credential.File)
 
 	errs := []error{c.err}
 	if c.Mode != "shadow" {
@@ -202,15 +193,6 @@ func (c *Classifier) prepare() {
 	}
 	if c.TimeoutMs < 0 {
 		errs = append(errs, fmt.Errorf("timeout_ms %d must not be negative", c.TimeoutMs))
-	}
-	set := 0
-	for _, s := range []bool{c.Credential.File != "", c.Credential.Env != "", len(c.Credential.Command) > 0} {
-		if s {
-			set++
-		}
-	}
-	if set > 1 {
-		errs = append(errs, errors.New("credential: set at most one of file, env, command"))
 	}
 	ids := make([]string, 0, len(c.Thresholds))
 	for id := range c.Thresholds {
@@ -244,44 +226,19 @@ func classifierStatus(c Classifier) string {
 	if u, err := url.Parse(c.BaseURL); err == nil {
 		baseURL = u.Redacted()
 	}
-	return fmt.Sprintf("%s (%s, model=%s, timeout=%dms, credential=%s, redact=%t)",
-		c.Mode, baseURL, c.Model, c.TimeoutMs, c.Credential.source(), *c.Redact)
-}
-
-// source names where the token comes from, never the token itself.
-func (cr Credential) source() string {
-	switch {
-	case cr.File != "":
-		return "file " + cr.File
-	case cr.Env != "":
-		return "env " + cr.Env
-	case len(cr.Command) > 0:
-		return "command " + cr.Command[0]
-	}
-	return "none"
+	return fmt.Sprintf("%s (%s, model=%s, timeout=%dms, redact=%t)",
+		c.Mode, baseURL, c.Model, c.TimeoutMs, *c.Redact)
 }
 
 // warnings lists what `barmkin validate` should flag in an enabled,
-// valid block. It never reads or prints the token.
+// valid block.
 func (c Classifier) warnings() []string {
 	if !c.Enabled || c.err != nil {
 		return nil
 	}
 	var warns []string
 	if u, _ := url.Parse(c.BaseURL); u.Scheme == "http" && !isLoopback(u.Hostname()) {
-		warns = append(warns, "base_url is plain http to a non-local host: the command and token travel unencrypted")
-	}
-	switch cr := c.Credential; {
-	case cr.File != "":
-		if info, err := os.Stat(cr.File); err != nil {
-			warns = append(warns, "credential: "+err.Error())
-		} else if perm := info.Mode().Perm(); perm != 0o600 {
-			warns = append(warns, fmt.Sprintf("credential: %s has mode %#o, want 0600", cr.File, perm))
-		}
-	case cr.Env != "":
-		if os.Getenv(cr.Env) == "" {
-			warns = append(warns, "credential: "+cr.Env+" is unset")
-		}
+		warns = append(warns, "base_url is plain http to a non-local host: the command travels unencrypted")
 	}
 	return warns
 }

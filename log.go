@@ -58,7 +58,7 @@ type ClassifierAudit struct {
 	DecidingQuestion string             `json:"deciding_question,omitempty"` // the question that produced would_decision
 	Probabilities    map[string]float64 `json:"probabilities,omitempty"`     // probability-of-yes per question
 	Thresholds       map[string]float64 `json:"thresholds,omitempty"`        // reject-at threshold per question
-	Error            string             `json:"error,omitempty"`             // no_credential | timeout | network | http_<code> | malformed_response | refused_send | breaker_open
+	Error            string             `json:"error,omitempty"`             // timeout | network | http_<code> | malformed_response | refused_send | breaker_open
 	Model            string             `json:"model,omitempty"`             // model the endpoint reported
 	RequestID        string             `json:"request_id,omitempty"`
 	LatencyMs        float64            `json:"latency_ms,omitempty"`

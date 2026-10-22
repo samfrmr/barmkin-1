@@ -12,8 +12,10 @@
 //
 //	200 {"model":"...","id":"...","answers":{"<id>":{"type":"noul","noul":0.97}}}
 //
-// base_url, model, timeout and the credential source are all
-// configuration. Barmkin bundles no endpoint, proxy or credential.
+// base_url, model and timeout are all configuration. Barmkin bundles
+// no endpoint, proxy or credential, and never sends one: authentication
+// is entirely the endpoint's business, typically a localhost proxy the
+// deployer runs that adds whatever its upstream needs.
 //
 // This file only fetches and strictly validates the answers; turning
 // them into a verdict happens in code (shadow.go), never in the model.
@@ -29,18 +31,16 @@ import (
 	"math"
 	"net/http"
 	"os"
-	"os/exec"
 	"regexp"
 	"strings"
-	"time"
 )
 
 // maxResponseBytes caps the response body read, so a misbehaving
 // endpoint can't exhaust memory.
 const maxResponseBytes = 256 * 1024
 
-// errRedirect refuses every redirect: the bearer token must never
-// follow a 30x to an unexpected host.
+// errRedirect refuses every redirect: the command must never follow a
+// 30x to an unexpected host.
 var errRedirect = errors.New("classifier: redirects are disabled")
 
 // wireQuestion is one question on the wire. The endpoint requires both
@@ -70,7 +70,7 @@ type systemOneResponse struct {
 // classifierError says why there is no answer. Every kind is logged
 // and the call proceeds on the regex decision alone.
 type classifierError struct {
-	kind string // no_credential | timeout | network | http_<code> | malformed_response | refused_send
+	kind string // timeout | network | http_<code> | malformed_response | refused_send
 	err  error
 }
 
@@ -94,67 +94,18 @@ type classifierClient struct {
 	url           string
 	model         string
 	responseModel *regexp.Regexp // nil: the response must echo model exactly
-	token         string
 	http          *http.Client
 }
 
-// newClassifierClient resolves the credential within ctx's deadline and
-// builds a client. A missing or unusable credential is a
-// "no_credential" error like any other unavailability.
-func newClassifierClient(ctx context.Context, c *Classifier) (*classifierClient, error) {
-	token, err := resolveCredential(ctx, c.Credential)
-	if err != nil {
-		return nil, err
-	}
+func newClassifierClient(c *Classifier) *classifierClient {
 	return &classifierClient{
 		url:           strings.TrimSuffix(c.BaseURL, "/") + "/v1/systemone",
 		model:         c.Model,
 		responseModel: c.responseModel,
-		token:         token,
 		http: &http.Client{
 			CheckRedirect: func(*http.Request, []*http.Request) error { return errRedirect },
 		},
-	}, nil
-}
-
-// resolveCredential returns the bearer token, or "" when no credential
-// is configured. A token file must be mode 0600: anything looser is
-// refused rather than trusting a token other local users could read.
-func resolveCredential(ctx context.Context, cr Credential) (string, error) {
-	noCred := func(err error) error { return &classifierError{kind: "no_credential", err: err} }
-	var token string
-	switch {
-	case cr.File != "":
-		info, err := os.Stat(cr.File)
-		if err != nil {
-			return "", noCred(err)
-		}
-		if perm := info.Mode().Perm(); perm != 0o600 {
-			return "", noCred(fmt.Errorf("%s must be mode 0600, has %#o", cr.File, perm))
-		}
-		b, err := os.ReadFile(cr.File)
-		if err != nil {
-			return "", noCred(err)
-		}
-		token = string(b)
-	case cr.Env != "":
-		token = os.Getenv(cr.Env)
-	case len(cr.Command) > 0:
-		cmd := exec.CommandContext(ctx, cr.Command[0], cr.Command[1:]...)
-		cmd.WaitDelay = 100 * time.Millisecond
-		out, err := cmd.Output()
-		if err != nil {
-			return "", noCred(fmt.Errorf("credential command: %w", err))
-		}
-		token = string(out)
-	default:
-		return "", nil
 	}
-	token = strings.TrimSpace(token)
-	if token == "" {
-		return "", noCred(errors.New("credential is empty"))
-	}
-	return token, nil
 }
 
 // answer is a validated response.
@@ -174,10 +125,10 @@ func (cl *classifierClient) ask(ctx context.Context, state map[string]string, qu
 	if err != nil {
 		return nil, &classifierError{kind: "network", err: err}
 	}
-	// Last line of defence after redaction: never send the bearer
-	// token itself or anything that looks like a private key.
-	if (cl.token != "" && bytes.Contains(body, []byte(cl.token))) || bytes.Contains(body, []byte("PRIVATE KEY")) {
-		return nil, &classifierError{kind: "refused_send", err: errors.New("request body contains a credential marker")}
+	// Last line of defence after redaction: never send anything that
+	// looks like a private key.
+	if bytes.Contains(body, []byte("PRIVATE KEY")) {
+		return nil, &classifierError{kind: "refused_send", err: errors.New("request body contains a private-key marker")}
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cl.url, bytes.NewReader(body))
@@ -185,9 +136,6 @@ func (cl *classifierClient) ask(ctx context.Context, state map[string]string, qu
 		return nil, &classifierError{kind: "network", err: err}
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if cl.token != "" {
-		req.Header.Set("Authorization", "Bearer "+cl.token)
-	}
 
 	resp, err := cl.http.Do(req)
 	if err != nil {

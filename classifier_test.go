@@ -65,26 +65,6 @@ func allSafe() map[string]float64 {
 	return probs
 }
 
-func writeTokenFile(t *testing.T, token string, mode os.FileMode) string {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "classifier.token")
-	if err := os.WriteFile(path, []byte(token), mode); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(path, mode); err != nil {
-		t.Fatal(err)
-	}
-	return path
-}
-
-func pinnedQuestions() map[string]wireQuestion {
-	qs := map[string]wireQuestion{}
-	for _, q := range questions {
-		qs[q.ID] = wireQuestion{Type: "noul", Instructions: q.Instructions}
-	}
-	return qs
-}
-
 func askErrKind(t *testing.T, c *Classifier) string {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(c.TimeoutMs)*time.Millisecond)
@@ -96,75 +76,23 @@ func askErrKind(t *testing.T, c *Classifier) string {
 	return errKind(err)
 }
 
-// ── credentials ─────────────────────────────────────────────────────────
+// ── authentication is the endpoint's business ─────────────────────────
 
-func TestResolveCredential(t *testing.T) {
-	good := writeTokenFile(t, "file-token\n", 0o600)
-	loose := writeTokenFile(t, "file-token", 0o644)
-	empty := writeTokenFile(t, "  \n", 0o600)
-	t.Setenv("BARMKIN_TEST_TOKEN", "env-token")
-
-	cases := []struct {
-		name      string
-		cred      Credential
-		wantToken string
-		wantKind  string
-	}{
-		{"none", Credential{}, "", ""},
-		{"file", Credential{File: good}, "file-token", ""},
-		{"file must be 0600", Credential{File: loose}, "", "no_credential"},
-		{"file missing", Credential{File: "/nonexistent/token"}, "", "no_credential"},
-		{"file empty", Credential{File: empty}, "", "no_credential"},
-		{"env", Credential{Env: "BARMKIN_TEST_TOKEN"}, "env-token", ""},
-		{"env unset", Credential{Env: "BARMKIN_TEST_TOKEN_UNSET"}, "", "no_credential"},
-		{"command", Credential{Command: []string{"printf", "cmd-token"}}, "cmd-token", ""},
-		{"command fails", Credential{Command: []string{"/nonexistent/token-helper"}}, "", "no_credential"},
-		{"command prints nothing", Credential{Command: []string{"printf", ""}}, "", "no_credential"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			token, err := resolveCredential(context.Background(), tc.cred)
-			if tc.wantKind != "" {
-				if errKind(err) != tc.wantKind {
-					t.Errorf("got token=%q err=%v, want %s", token, err, tc.wantKind)
-				}
-				return
-			}
-			if err != nil || token != tc.wantToken {
-				t.Errorf("got token=%q err=%v, want %q", token, err, tc.wantToken)
-			}
-		})
-	}
-}
-
-func TestResolveCredential_HangingCommandIsBoundedByDeadline(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
-	start := time.Now()
-	_, err := resolveCredential(ctx, Credential{Command: []string{"sh", "-c", "sleep 30"}})
-	if errKind(err) != "no_credential" {
-		t.Errorf("got %v, want no_credential", err)
-	}
-	if elapsed := time.Since(start); elapsed > 2*time.Second {
-		t.Errorf("hanging command blocked for %v", elapsed)
-	}
-}
-
-func TestClassifier_SendsBearerToken(t *testing.T) {
+func TestClassifier_SendsNoCredentials(t *testing.T) {
 	var auth string
+	var cookies int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		auth = r.Header.Get("Authorization")
+		cookies = len(r.Cookies())
 		writeAnswers(w, testModel, allSafe())
 	}))
 	defer srv.Close()
 
-	c := testClassifier(t, srv.URL)
-	c.Credential = Credential{File: writeTokenFile(t, "zz-test-token-93f1", 0o600)}
-	if _, err := classify(context.Background(), c, Request{}, "make test"); err != nil {
+	if _, err := classify(context.Background(), testClassifier(t, srv.URL), Request{}, "make test"); err != nil {
 		t.Fatal(err)
 	}
-	if auth != "Bearer zz-test-token-93f1" {
-		t.Errorf("Authorization = %q", auth)
+	if auth != "" || cookies != 0 {
+		t.Errorf("barmkin must send no credentials, got Authorization=%q and %d cookies", auth, cookies)
 	}
 }
 
@@ -321,19 +249,16 @@ func TestClassifier_ConnectionRefusedIsNetwork(t *testing.T) {
 	}
 }
 
-func TestClassifier_RefusesToSendCredentialMarkers(t *testing.T) {
+func TestClassifier_RefusesToSendPrivateKeyMarkers(t *testing.T) {
 	srv, calls := stub(t, allSafe())
 	c := testClassifier(t, srv.URL)
-	c.Credential = Credential{File: writeTokenFile(t, "my-secret-token", 0o600)}
 	c.Redact = new(bool) // even with redaction off
 
-	for _, cmd := range []string{"echo my-secret-token", "grep 'PRIVATE KEY' notes.txt"} {
-		if _, err := classify(context.Background(), c, Request{}, cmd); errKind(err) != "refused_send" {
-			t.Errorf("%q: got %v, want refused_send", cmd, err)
-		}
+	if _, err := classify(context.Background(), c, Request{}, "grep 'PRIVATE KEY' notes.txt"); errKind(err) != "refused_send" {
+		t.Errorf("got %v, want refused_send", err)
 	}
 	if *calls != 0 {
-		t.Errorf("refused sends reached the endpoint %d times", *calls)
+		t.Errorf("a refused send reached the endpoint %d times", *calls)
 	}
 }
 
@@ -399,14 +324,11 @@ func loadClassifierConfig(t *testing.T, yamlText string) *Config {
 }
 
 func TestClassifierConfig_Defaults(t *testing.T) {
-	t.Setenv("HOME", "/home/u")
 	c := loadClassifierConfig(t, `
 classifier:
   enabled: true
-  base_url: "https://classifier.example"
+  base_url: "http://127.0.0.1:8080"
   model: "m-1"
-  credential:
-    file: "~/.barmkin/classifier.token"
 `).Classifier
 	if c.err != nil {
 		t.Fatal(c.err)
@@ -414,9 +336,6 @@ classifier:
 	if c.Mode != "shadow" || c.TimeoutMs != 1500 || !*c.Redact || len(c.Tools) != 1 || c.Tools[0] != "bash" ||
 		len(c.PermissionModes) != 0 || c.Breaker.OpenAfterFailures != 1 || c.Breaker.CooldownS != 60 {
 		t.Errorf("unexpected defaults: %+v", c)
-	}
-	if c.Credential.File != "/home/u/.barmkin/classifier.token" {
-		t.Errorf("credential.file not expanded: %q", c.Credential.File)
 	}
 	if !c.active() {
 		t.Error("a valid enabled block should be active")
@@ -432,8 +351,6 @@ classifier:
   model: "m-1"
   response_model: 'm-1\b'
   timeout_ms: 800
-  credential:
-    env: "CLASSIFIER_TOKEN"
   redact: false
   tools: [bash, write]
   permission_modes: [auto]
@@ -448,7 +365,7 @@ classifier:
 	if c.err != nil {
 		t.Fatal(c.err)
 	}
-	if c.TimeoutMs != 800 || *c.Redact || c.Credential.Env != "CLASSIFIER_TOKEN" || len(c.Tools) != 2 || !c.SkipReadOnly ||
+	if c.TimeoutMs != 800 || *c.Redact || len(c.Tools) != 2 || !c.SkipReadOnly ||
 		!c.SkipAllowRules || c.Thresholds["no_outward_effect"] != 0.2 || c.Breaker.OpenAfterFailures != 3 || c.responseModel == nil {
 		t.Errorf("keys not applied: %+v", c)
 	}
@@ -460,14 +377,14 @@ func TestClassifierConfig_Rejects(t *testing.T) {
 		name, yaml, want string
 	}{
 		{"unknown key", base + "  timout_ms: 10\n", `line 5: unknown key "timout_ms"`},
-		{"unknown nested key", base + "  credential:\n    fil: x\n", `unknown key "credential.fil"`},
+		{"unknown nested key", base + "  breaker:\n    cooldwn_s: 5\n", `unknown key "breaker.cooldwn_s"`},
+		{"no credential settings", base + "  credential:\n    file: /x\n", `unknown key "credential"`},
 		{"wrong type", base + "  timeout_ms: soon\n", "cannot unmarshal"},
 		{"enforce mode", base + "  mode: enforce\n", `mode "enforce" is not supported`},
 		{"unix socket", strings.Replace(base, "https://classifier.example", "unix:///run/classifier.sock", 1), "must be an http:// or https:// URL"},
 		{"file url", strings.Replace(base, "https://classifier.example", "file:///tmp/x", 1), "must be an http:// or https:// URL"},
 		{"no host", strings.Replace(base, "https://classifier.example", "https://", 1), "must be an http:// or https:// URL"},
 		{"no model", strings.Replace(base, "  model: \"m-1\"\n", "", 1), "model is required"},
-		{"two credentials", base + "  credential:\n    env: X\n    file: /x\n", "set at most one"},
 		{"bad response_model", base + "  response_model: '('\n", "response_model"},
 		{"unknown question", base + "  thresholds:\n    is_fine: 0.5\n", `unknown question "is_fine"`},
 		{"threshold out of range", base + "  thresholds:\n    no_secret_egress: 1.5\n", "must be between 0 and 1"},
