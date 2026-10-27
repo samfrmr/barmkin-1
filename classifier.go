@@ -70,7 +70,7 @@ type systemOneResponse struct {
 // classifierError says why there is no answer. Every kind is logged
 // and the call proceeds on the regex decision alone.
 type classifierError struct {
-	kind string // timeout | network | http_<code> | malformed_response | refused_send
+	kind string // timeout | network | redirect | http_<code> | malformed_response | refused_send
 	err  error
 }
 
@@ -139,7 +139,10 @@ func (cl *classifierClient) ask(ctx context.Context, state map[string]string, qu
 
 	resp, err := cl.http.Do(req)
 	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) || os.IsTimeout(err) {
+		switch {
+		case errors.Is(err, errRedirect):
+			return nil, &classifierError{kind: "redirect", err: err}
+		case errors.Is(err, context.DeadlineExceeded) || os.IsTimeout(err):
 			return nil, &classifierError{kind: "timeout", err: err}
 		}
 		return nil, &classifierError{kind: "network", err: err}
@@ -187,7 +190,9 @@ func (cl *classifierClient) ask(ctx context.Context, state map[string]string, qu
 
 // secretPatterns are masked in the command before it leaves the
 // machine (unless redact: false). Only the command and cwd are ever
-// sent, never file contents.
+// sent, never file contents. A pattern's "keep" and "rest" groups stay
+// in place around the marker, so the classifier still sees that a
+// secret was there and where it was going.
 var secretPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----`),
 	regexp.MustCompile(`\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b`), // JWT
@@ -195,13 +200,28 @@ var secretPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`\bgh[pousr]_[A-Za-z0-9]{20,}\b`),                        // GitHub tokens
 	regexp.MustCompile(`\b(AKIA|ASIA)[A-Z0-9]{16}\b`),                           // AWS access key ids
 	regexp.MustCompile(`(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+`),
-	regexp.MustCompile(`(?i)\b[A-Z0-9_]*(KEY|TOKEN|SECRET|PASSWORD)\s*=\s*\S+`),
+	// Authorization headers, whatever the scheme.
+	regexp.MustCompile(`(?i)(?P<keep>\bAuthorization["']?\s*:\s*["']?)[^'"\n]+`),
+	// NAME=value and NAME: value, including JSON and YAML.
+	regexp.MustCompile(`(?i)(?P<keep>\b[A-Z0-9_-]*(KEY|TOKEN|SECRET|PASSWORD|PASSWD)["']?\s*[:=]\s*["']?)[^\s'"]+`),
+	// NAME value, only for snake_case, kebab-case and flag names
+	// (aws_secret_access_key, _authToken, --password), so prose such as
+	// "rotate the api key" is left alone.
+	regexp.MustCompile(`(?i)(?P<keep>(--?|\b[A-Z0-9]*[_-])[A-Z0-9_-]*?(KEY|TOKEN|SECRET|PASSWORD|PASSWD)\s+)[^\s'"-][^\s'"]*`),
+	// curl-style -u user:pass and --user user:pass.
+	regexp.MustCompile(`(?P<keep>(^|\s)(-u\s+|--(proxy-)?user(\s+|=))["']?)[^\s'":]*:[^\s'"]+`),
+	// user:pass@ in a URL.
+	regexp.MustCompile(`(?i)(?P<keep>\b[a-z][a-z0-9+.-]*://)[^/\s'"@:]+:[^/\s'"@]+(?P<rest>@)`),
+	// Unprefixed tokens: exactly 32 hex digits, or a UUID. Git SHAs (40)
+	// and container ids (64) are longer runs and don't match.
+	regexp.MustCompile(`(?i)\b[0-9a-f]{32}\b`),
+	regexp.MustCompile(`(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b`),
 }
 
 // redact replaces every secret-pattern match with a fixed marker.
 func redact(s string) string {
 	for _, re := range secretPatterns {
-		s = re.ReplaceAllString(s, "[REDACTED]")
+		s = re.ReplaceAllString(s, "${keep}[REDACTED]${rest}")
 	}
 	return s
 }

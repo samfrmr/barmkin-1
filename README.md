@@ -147,7 +147,7 @@ Each classified call adds a `classifier` object to its log line, and `barmkin st
 What to expect:
 
 - **Only regex-allowed calls are classified.** A rule deny is final and never reaches the classifier.
-- **It fails open.** A timeout, network or HTTP error (including the endpoint refusing the request), malformed response or unexpected model is logged as `error` with no verdict. A deny verdict and a dead endpoint look the same to the agent: nothing happens.
+- **It fails open.** A timeout, network or HTTP error (including the endpoint refusing the request), refused redirect, malformed response or unexpected model is logged as `error` with no verdict. A deny verdict and a dead endpoint look the same to the agent: nothing happens.
 - **It adds latency.** Classification is synchronous, so each classified call can wait up to `timeout_ms` (default 1500). After a failure a per-session breaker skips the classifier for `cooldown_s`, so an outage costs one timeout rather than one per call.
 - **Only the command and cwd leave the machine**, with common secret patterns redacted and the command cut to 4000 characters. Never file contents or output. A command still containing a private-key marker isn't sent at all.
 

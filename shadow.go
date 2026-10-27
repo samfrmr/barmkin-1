@@ -195,12 +195,14 @@ func runShadow(c *Classifier, req Request, content string) *ClassifierAudit {
 }
 
 // classify builds the request state and asks the endpoint every
-// question in one call.
+// question in one call. It redacts before truncating, so the cut can't
+// leave part of a secret too short for its pattern to match.
 func classify(ctx context.Context, c *Classifier, req Request, content string) (*answer, error) {
-	command := truncate(content, 4000)
+	command := content
 	if c.Redact == nil || *c.Redact {
 		command = redact(command)
 	}
+	command = truncate(command, 4000)
 	state := map[string]string{"command": command, "cwd": req.Cwd}
 	qs := make(map[string]wireQuestion, len(questions))
 	for _, q := range questions {
@@ -304,6 +306,12 @@ func (b Breaker) check(st breakerState) (open, halfOpen bool) {
 	return true, false
 }
 
+// recordFailure counts a failure against the state loaded before the
+// call. The count is best-effort across processes: parallel tool calls
+// in one session each read, increment and write, so concurrent failures
+// can overwrite one another and the breaker can open later than
+// open_after_failures says. At the default of 1 any failure opens it,
+// so nothing is lost.
 func (b Breaker) recordFailure(sessionID string, st breakerState) {
 	st.Failures++
 	if st.Failures >= b.OpenAfterFailures {

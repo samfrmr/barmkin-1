@@ -219,8 +219,8 @@ func TestClassifier_RefusesRedirects(t *testing.T) {
 		http.Redirect(w, r, "http://127.0.0.1:1/elsewhere", http.StatusFound)
 	}))
 	defer srv.Close()
-	if got := askErrKind(t, testClassifier(t, srv.URL)); got != "network" {
-		t.Errorf("got %s, want network", got)
+	if got := askErrKind(t, testClassifier(t, srv.URL)); got != "redirect" {
+		t.Errorf("got %s, want redirect", got)
 	}
 }
 
@@ -264,22 +264,79 @@ func TestClassifier_RefusesToSendPrivateKeyMarkers(t *testing.T) {
 
 // ── redaction ───────────────────────────────────────────────────────────
 
+// fakeUUID is a made-up legacy-style npm token, kept apart from its
+// key name so secret scanners don't take the fixture for a real one.
+const fakeUUID = "3f2a1b4c-5d6e-4f70-8a9b-0c1d2e3f4a5b"
+
 func TestRedact(t *testing.T) {
-	for _, in := range []string{
-		"curl -H 'Authorization: Bearer abc.def-123' https://api.example.com",
-		"export OPENAI_API_KEY=sk-abc123xyz789secret",
-		"GITHUB_TOKEN=abc123 make release",
-		"git clone https://ghp_abcdefghijklmnopqrstuvwxyz012345@github.com/x/y",
-		"aws configure set aws_access_key_id AKIAABCDEFGHIJKLMNOP",
-		"echo eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl",
+	for _, tc := range []struct{ in, secret string }{
+		{"curl -H 'Authorization: Bearer abc.def-123' https://api.example.com", "abc.def-123"},
+		{"curl -H 'Authorization: token 3f2a1b4c5d6e4f70' https://api.example.com", "3f2a1b4c5d6e4f70"},
+		{`curl -H "Authorization: Basic YWRtaW46aHVudGVy" https://api.example.com`, "YWRtaW46aHVudGVy"},
+		{"curl -H 'X-Api-Key: k3y-v4lue-123' https://api.example.com", "k3y-v4lue-123"},
+		{`curl -d '{"api_key": "k3y-v4lue-123"}' https://api.example.com`, "k3y-v4lue-123"},
+		{"export OPENAI_API_KEY=sk-abc123xyz789secret", "abc123xyz789secret"},
+		{"GITHUB_TOKEN=abc123 make release", "abc123"},
+		{"git clone https://ghp_abcdefghijklmnopqrstuvwxyz012345@github.com/x/y", "abcdefghijklmnopqrstuvwxyz012345"},
+		{"git clone https://oauth2:s3cr3tvalue@gitlab.example.com/x/y", "s3cr3tvalue"},
+		{"aws configure set aws_access_key_id AKIAABCDEFGHIJKLMNOP", "AKIAABCDEFGHIJKLMNOP"},
+		{"aws configure set aws_access_key_id af5391c2d4e6f8a0b1c3d5e7f9a1b3c5", "af5391c2d4e6f8a0b1c3d5e7f9a1b3c5"},
+		{"aws configure set aws_secret_access_key wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "wJalrXUtnFEMI"},
+		{"npm config set _authToken " + fakeUUID, "3f2a1b4c"},
+		{"echo " + fakeUUID + " >> .npmrc", "3f2a1b4c"},
+		{"curl -u admin:hunter2pass https://api.example.com", "hunter2pass"},
+		{"curl --user=admin:hunter2pass https://api.example.com", "hunter2pass"},
+		{"mytool --password hunter2pass", "hunter2pass"},
+		{"echo eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl", "c2lnbmF0dXJl"},
 	} {
-		if got := redact(in); !strings.Contains(got, "[REDACTED]") {
-			t.Errorf("redact(%q) = %q, nothing masked", in, got)
+		if got := redact(tc.in); strings.Contains(got, tc.secret) || !strings.Contains(got, "[REDACTED]") {
+			t.Errorf("redact(%q) = %q, want %q masked", tc.in, got, tc.secret)
 		}
 	}
-	plain := "git commit -m 'fix bug'"
-	if got := redact(plain); got != plain {
-		t.Errorf("redact(%q) = %q, want unchanged", plain, got)
+	for _, plain := range []string{
+		"git commit -m 'fix bug'",
+		"git commit -m 'rotate the api key in config'",
+		"git show 8cd0305c1a2b3c4d5e6f708192a3b4c5d6e7f809",
+		"ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519",
+		"git push -u origin main",
+		"curl https://api.example.com:8443/v1/status",
+		"git clone git@github.com:x/y.git",
+	} {
+		if got := redact(plain); got != plain {
+			t.Errorf("redact(%q) = %q, want unchanged", plain, got)
+		}
+	}
+}
+
+func TestRedact_KeepsContext(t *testing.T) {
+	for in, want := range map[string]string{
+		"export DEPLOY_TOKEN=abc123":                        "export DEPLOY_TOKEN=[REDACTED]",
+		"aws configure set aws_secret_access_key wJalrXUtn": "aws configure set aws_secret_access_key [REDACTED]",
+		"curl https://admin:hunter2pass@x.example/api":      "curl https://[REDACTED]@x.example/api",
+	} {
+		if got := redact(in); got != want {
+			t.Errorf("redact(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestClassify_RedactsBeforeTruncating(t *testing.T) {
+	var sent systemOneRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&sent)
+		writeAnswers(w, testModel, allSafe())
+	}))
+	defer srv.Close()
+
+	// The token straddles the 4000-character cut, leaving a fragment too
+	// short for its own pattern.
+	token := "ghp_" + strings.Repeat("A", 36)
+	cmd := "echo " + strings.Repeat("x", 3980) + " " + token
+	if _, err := classify(context.Background(), testClassifier(t, srv.URL), Request{}, cmd); err != nil {
+		t.Fatal(err)
+	}
+	if got := sent.State["command"]; strings.Contains(got, "ghp_") || len(got) > 4000 {
+		t.Errorf("sent %d chars ending %q, want the token masked and the command cut to 4000", len(got), got[len(got)-30:])
 	}
 }
 
