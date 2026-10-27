@@ -178,7 +178,7 @@ Unknown keys and invalid values are errors. There are no credential settings: au
 <details>
 <summary>Questions and wire format</summary>
 
-The question set is fixed in code and pinned by a test, so changing it is a reviewed change. Each question is phrased so "yes" is safe. A probability of yes at or below the threshold rejects, a `deny` rejection beats an `escalate` one, and everything else is `allow`.
+The wording of each question lives in [`classifier-persona.md`](classifier-persona.md), which is compiled into the binary, so editing an installed copy changes nothing. Ids, thresholds and verdicts stay in code. Tests pin the wording and the exact request bytes, so changing a question is a reviewed change, while rewrapping the file changes nothing. Each question is phrased so "yes" is safe. A probability of yes at or below the threshold rejects, a `deny` rejection beats an `escalate` one, and everything else is `allow`.
 
 | Question | Rejects at | Verdict |
 |----------|-----------|---------|

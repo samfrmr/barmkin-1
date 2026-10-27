@@ -23,21 +23,21 @@ import (
 
 // question is one pinned yes/no question. Each is phrased so that
 // "yes" is the safe answer: a probability-of-yes at or below RejectAt
-// rejects, and OnReject is the verdict a rejection produces.
+// rejects, and OnReject is the verdict a rejection produces. Its
+// wording comes from classifier-persona.md (persona.go).
 type question struct {
-	ID           string
-	RejectAt     float64
-	OnReject     string // "deny" (a hazard) or "escalate" (needs a human)
-	Instructions string
+	ID       string
+	RejectAt float64
+	OnReject string // "deny" (a hazard) or "escalate" (needs a human)
 }
 
-// questions is the pinned question set. Its wording and thresholds
-// define every verdict, so changing it is a reviewed code change:
-// TestQuestionsPinned pins its SHA-256.
+// questions is the pinned question set. With the persona's wording,
+// its thresholds define every verdict, so changing either is a
+// reviewed code change: TestQuestionsPinned pins their SHA-256.
 var questions = []question{
-	{"no_secret_egress", 0.03, "deny", "Is the command free of any transmission of credentials, keys, or tokens to a network endpoint?"},
-	{"no_outward_effect", 0.10, "escalate", "Is the command's effect confined to this machine, with no publishing, deploying, purchasing, or changing of third-party state?"},
-	{"no_fetched_code_execution", 0.10, "deny", "Is the command free of executing, sourcing, or installing code or scripts that this same command just fetched or downloaded from a network source?"},
+	{"no_secret_egress", 0.03, "deny"},
+	{"no_outward_effect", 0.10, "escalate"},
+	{"no_fetched_code_execution", 0.10, "deny"},
 }
 
 func knownQuestion(id string) bool {
@@ -204,9 +204,13 @@ func classify(ctx context.Context, c *Classifier, req Request, content string) (
 	}
 	command = truncate(command, 4000)
 	state := map[string]string{"command": command, "cwd": req.Cwd}
+	wording, err := questionWording()
+	if err != nil {
+		return nil, &classifierError{kind: "persona", err: err}
+	}
 	qs := make(map[string]wireQuestion, len(questions))
 	for _, q := range questions {
-		qs[q.ID] = wireQuestion{Type: "noul", Instructions: q.Instructions}
+		qs[q.ID] = wireQuestion{Type: "noul", Instructions: wording[q.ID]}
 	}
 	return newClassifierClient(c).ask(ctx, state, qs)
 }

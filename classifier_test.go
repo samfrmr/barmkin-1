@@ -125,10 +125,47 @@ func TestClassifier_RequestShape(t *testing.T) {
 	if len(sent.Questions) != len(questions) {
 		t.Fatalf("sent %d questions, want %d", len(sent.Questions), len(questions))
 	}
+	wording, err := questionWording()
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, q := range questions {
-		if got := sent.Questions[q.ID]; got.Type != "noul" || got.Instructions != q.Instructions {
+		if got := sent.Questions[q.ID]; got.Type != "noul" || got.Instructions != wording[q.ID] {
 			t.Errorf("question %q sent as %+v", q.ID, got)
 		}
+	}
+}
+
+// TestClassifier_RequestBodyGolden pins the exact bytes on the wire for
+// one command, so moving or reformatting the question wording can't
+// change a request unnoticed. After a deliberate wording change:
+//
+//	go test -run TestClassifier_RequestBodyGolden -update
+func TestClassifier_RequestBodyGolden(t *testing.T) {
+	var body []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ = io.ReadAll(r.Body)
+		writeAnswers(w, testModel, allSafe())
+	}))
+	defer srv.Close()
+
+	c := testClassifier(t, srv.URL)
+	cmd := `git push origin "main" && echo 'done' > /tmp/out <&3`
+	if _, err := classify(context.Background(), c, Request{Cwd: "/work/repo"}, cmd); err != nil {
+		t.Fatal(err)
+	}
+	goldenPath := filepath.Join("testdata", "request.golden.json")
+	if *update {
+		if err := os.WriteFile(goldenPath, append(body, '\n'), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want, err := os.ReadFile(goldenPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(body) + "\n"; got != string(want) {
+		t.Errorf("request body differs from %s:\ngot  %s\nwant %s", goldenPath, got, want)
 	}
 }
 

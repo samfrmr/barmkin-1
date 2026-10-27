@@ -363,18 +363,22 @@ func TestComposeVerdict_ThresholdOverride(t *testing.T) {
 // TestQuestionsPinned fails whenever the question set changes. Every
 // logged verdict depends on this exact wording and these thresholds, so
 // a change must be deliberate: update the hash in the same reviewed
-// commit.
+// commit. Reflowing the persona doesn't change it.
 func TestQuestionsPinned(t *testing.T) {
+	wording, err := questionWording()
+	if err != nil {
+		t.Fatal(err)
+	}
 	h := sha256.New()
 	for _, q := range questions {
-		fmt.Fprintf(h, "%s|%v|%s|%s\n", q.ID, q.RejectAt, q.OnReject, q.Instructions)
+		fmt.Fprintf(h, "%s|%v|%s|%s\n", q.ID, q.RejectAt, q.OnReject, wording[q.ID])
 	}
 	const want = "4c3521c8d0fc608c5157ddebdb81a76c66d8a276ff3fe4c2ba682d4f3b044003"
 	if got := hex.EncodeToString(h.Sum(nil)); got != want {
 		t.Errorf("question set changed: sha256 %s, pinned %s", got, want)
 	}
 	for _, q := range questions {
-		if strings.TrimSpace(q.Instructions) == "" || (q.OnReject != "deny" && q.OnReject != "escalate") || q.RejectAt <= 0 || q.RejectAt >= 1 {
+		if strings.TrimSpace(wording[q.ID]) == "" || (q.OnReject != "deny" && q.OnReject != "escalate") || q.RejectAt <= 0 || q.RejectAt >= 1 {
 			t.Errorf("question %q is not well-formed: %+v", q.ID, q)
 		}
 	}

@@ -209,6 +209,9 @@ func (c *Classifier) prepare() {
 	if c.Breaker.OpenAfterFailures < 0 || c.Breaker.CooldownS < 0 {
 		errs = append(errs, errors.New("breaker: values must not be negative"))
 	}
+	if _, err := questionWording(); err != nil {
+		errs = append(errs, err)
+	}
 	c.err = errors.Join(errs...)
 }
 

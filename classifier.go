@@ -70,7 +70,7 @@ type systemOneResponse struct {
 // classifierError says why there is no answer. Every kind is logged
 // and the call proceeds on the regex decision alone.
 type classifierError struct {
-	kind string // timeout | network | redirect | http_<code> | malformed_response | refused_send
+	kind string // timeout | network | redirect | http_<code> | malformed_response | refused_send | persona
 	err  error
 }
 

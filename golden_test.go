@@ -24,7 +24,7 @@ import (
 //
 // The same transcript must come out of the current binary both with no
 // classifier block and with a disabled one.
-var update = flag.Bool("update", false, "rewrite testdata/unconfigured.golden")
+var update = flag.Bool("update", false, "rewrite the golden files in testdata")
 
 // TestMain lets tests run the test binary as barmkin itself.
 func TestMain(m *testing.M) {
